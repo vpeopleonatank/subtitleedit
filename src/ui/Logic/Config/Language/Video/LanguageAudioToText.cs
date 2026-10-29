@@ -10,6 +10,17 @@ public class LanguageAudioToText
     public string LinesTranscribedXOfYFailedZ { get; set; }
     public string LinesTranscribedXOfYCancelled { get; set; }
     public string NoLinesTranscribed { get; set; }
+    public string GipformerInstallTitle { get; set; }
+    public string GipformerManualInstall { get; set; }
+    public string GipformerIncomplete { get; set; }
+    public string GipformerUnsupportedVersion { get; set; }
+    public string GipformerInvalidAddon { get; set; }
+    public string GipformerAddonStatusMissing { get; set; }
+    public string GipformerAddonStatusInvalid { get; set; }
+    public string GipformerEngineFailedTitle { get; set; }
+    public string GipformerEngineFailed { get; set; }
+    public string GipformerNoSpeechTitle { get; set; }
+    public string GipformerNoSpeech { get; set; }
     public string ApplyTranscribedLines { get; set; }
     public string RetryFailedLines { get; set; }
     public string IsolateSpeech { get; set; }
@@ -88,6 +99,17 @@ public class LanguageAudioToText
         LinesTranscribedXOfYFailedZ = "{0} of {1} lines were transcribed - {2} failed or had no speech.\n\nFailed lines keep their current text. Apply the transcribed lines, or retry the failed ones (you can change engine or settings first)?";
         LinesTranscribedXOfYCancelled = "Transcription was cancelled after {0} of {1} lines.\n\nApply the transcribed lines? The other lines keep their current text.";
         NoLinesTranscribed = "None of the {0} lines could be transcribed.\nPlease check the tools log for details.";
+        GipformerInstallTitle = "Gipformer is not ready";
+        GipformerManualInstall = "Gipformer - Vietnamese is a local add-on, not a download.\n\nExtract the contents of the add-on ZIP here:\n{0}\n\nso that this folder contains addon.json, runtime and pack.";
+        GipformerIncomplete = "The Gipformer add-on is incomplete: {0} is missing or has an unexpected size in\n{1}\n\nExtract the add-on ZIP again and replace the whole Gipformer folder.";
+        GipformerUnsupportedVersion = "This Gipformer add-on has format {0}, which this version of Subtitle Edit does not support.\n\nGet a matching build and extract it here:\n{1}";
+        GipformerInvalidAddon = "The Gipformer add-on could not be validated: {0}.\n\nExtract a freshly built add-on ZIP here:\n{1}";
+        GipformerAddonStatusMissing = "Gipformer add-on not installed - extract the ZIP into {0}";
+        GipformerAddonStatusInvalid = "Gipformer add-on incomplete or invalid - extract the ZIP into {0}";
+        GipformerEngineFailedTitle = "Gipformer failed";
+        GipformerEngineFailed = "Gipformer could not transcribe the audio.\n\n{0}";
+        GipformerNoSpeechTitle = "No speech found";
+        GipformerNoSpeech = "Gipformer finished normally but found no speech in the audio.";
         ApplyTranscribedLines = "Apply transcribed";
         RetryFailedLines = "Retry failed";
         IsolateSpeech = "Isolate speech (slow)";

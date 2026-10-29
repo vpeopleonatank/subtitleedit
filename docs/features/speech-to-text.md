@@ -23,8 +23,9 @@ Subtitle Edit can automatically transcribe audio to text using Whisper-based and
 | Google Cloud Speech-to-Text | All | Online Google Cloud Speech-to-Text v2 (Chirp models) with word-level timings. Needs a service account key file (JSON) - the v2 API does not accept API keys |
 | Qwen3 ASR CPP | Windows, Linux, macOS | Local Qwen3 ASR engine with downloadable GGUF models |
 | Crisp ASR | Windows, Linux, macOS | Single engine with selectable backends: Parakeet, Canary, Cohere, Fire Red, Fun-ASR Nano, GigaAM, GLM, Granite, Index-Echo, Qwen3, Mega, MOSS Diarize, Omni, Kyutai, SenseVoice, ARK, Voxtral |
+| Gipformer - Vietnamese | Windows (x64) | Offline Vietnamese engine (CPU only), installed by hand: see [Gipformer (local add-on)](#gipformer-local-add-on) |
 
-Engines and models are downloaded automatically on first use.
+Engines and models are downloaded automatically on first use - except **Gipformer - Vietnamese**, which is a manually installed local add-on that Subtitle Edit never downloads.
 
 ## SE5 Engine Notes
 
@@ -37,6 +38,23 @@ Engines and models are downloaded automatically on first use.
 - Automatic language detection: the Whisper engines (Whisper CPP, Purfview Faster Whisper XXL, CTranslate2, WhisperX, Const-me and OpenAI) and every Crisp ASR backend have an **Auto detect** entry at the top of the language list - except the Russian-only GigaAM and MOSS Diarize, which keep their fixed languages.
 - **Google Cloud Speech-to-Text** is Google's v2 API, which does not take API keys. In the Google Cloud console, create a project with billing, enable the Speech-to-Text API, create a service account with the *Cloud Speech Client* and *Storage Admin* roles, add a JSON key to it and pick that file as the **Key file**. If your organisation does not allow service account keys, leave the key file empty, run `gcloud auth application-default login` and fill in the **Project ID**. The other fields are **Region** (`us` or `eu` for chirp_3, or a specific region for other models), **Model** (`chirp_3`, `chirp_2`, `long`, `latest_long`...), a **Language** hint (leave it empty for automatic detection with the Chirp models), the Cloud Storage **bucket name** long audio is uploaded to (one named `<project>-subtitle-edit-stt` is created on first use, and uploads are deleted after each run), **Dynamic batching** (on by default - about a fifth of the price, but Google gives no latency guarantee) and a timeout.
 - Each engine can have separate advanced command-line parameters.
+
+## Gipformer (local add-on)
+
+**Gipformer - Vietnamese** is an offline Vietnamese engine built from CaptionHelper's sherpa-onnx pipeline (Gipformer 1.5 RNN-T 68M, Silero VAD, Vietnamese number normalization, ViBERT-capu punctuation and casing, word timestamps). It runs on the CPU, needs no Python and no network, and makes no downloads.
+
+It is the one exception to the automatic install: the maintainer builds the sidecar and its model pack, and the user extracts the add-on ZIP into the data folder. Extract the contents of `gipformer-vi-win-x64.zip` into `[Data Folder]/SpeechToText/` so that `[Data Folder]/SpeechToText/Gipformer/` contains `addon.json`, `runtime/` and `pack/`. The engine row's hint names the same folder, and the *Open Subtitle Edit data folder* action opens its parent. To upgrade, close running transcription and replace the whole `Gipformer` folder.
+
+- **Accuracy:** this is a small model (68M parameters). In direct comparison against a large multilingual model (`large-v3-turbo`) the output needed more editing, so pick Gipformer for offline CPU speed and Vietnamese-only operation, not for accuracy.
+- **Platform:** Windows x64 only; the entry is not offered anywhere else. CPU only - no CUDA or Vulkan variant, no translation, no automatic language detection, no forced aligner and no speaker detection.
+- **Model:** one fixed pack (`gipformer1.5-vi`, 387 MB, shipped inside the add-on). The model dropdown has no download button.
+- **Advanced parameters:** `--vad on|off` (default `on`) and `--threads N` (`N` >= 1). `--model-dir`, `--input`, `--language`, `--device` and any other flag are refused with an error, because Subtitle Edit owns them.
+- **Status row:** when the add-on is missing or incomplete, the hint under the engine row names the exact folder to extract into, and the download/re-download actions explain the manual install instead of starting a download.
+- **Timing:** words come with engine timings; cue ends are approximate (the sidecar pads the last token, capped at the next word), so a selected-line run uses the extracted clip and the editor applies the media offset once.
+
+Failures are explicit: a crash, nonzero exit, malformed output, duplicate result or a run that ends without a result is an error with the captured stderr in the tools log, never "no speech". A clean exit with a valid empty result means the audio contained no speech.
+
+The add-on is local executable code. Only install a package you built or received from a trusted source; the readiness check and manifest hashes detect an incomplete or drifted copy, they do not authenticate it. See [Third-party components](../third-party-components.md) for the extraction layout, notices and redistribution status.
 
 ## Crisp ASR backends
 

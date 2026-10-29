@@ -6,24 +6,25 @@ using Nikse.SubtitleEdit.Core.Common.TextLengthCalculator;
 namespace Nikse.SubtitleEdit.Features.Video.SpeechToText;
 
 /// <summary>
-/// One aligned token from qwen3-asr-cli's <c>--transcribe-align</c> JSON output.
-/// For CJK languages the forced aligner emits one token per character, and
-/// punctuation marks arrive as their own (often zero-length) tokens.
+/// One timed token from an engine's word-level output: a word, or a punctuation mark emitted as
+/// its own (often zero-length) token. For CJK languages a forced aligner emits one token per
+/// character; for space-delimited languages a token is usually a word with attached punctuation.
 /// </summary>
-public readonly record struct Qwen3AsrWord(string Word, double StartSeconds, double EndSeconds);
+public readonly record struct TimedWord(string Word, double StartSeconds, double EndSeconds);
 
 /// <summary>
-/// Builds subtitle cues from Qwen3 ASR CPP's word-level alignment.
+/// Builds subtitle cues from an engine's word-level timings, shared by the Qwen3 ASR CPP and
+/// Gipformer paths.
 ///
-/// Mirrors the rules of the engine's own SRT writer (which Subtitle Edit bypasses
-/// by requesting JSON): a cue ends on sentence punctuation, on a long pause, or
-/// when it grows past the length cap. Spaces are only inserted between Latin
-/// tokens - never around CJK characters or before punctuation. The previous
-/// implementation split purely on a 0.5 s gap / 80-character cap and joined every
-/// token with a space, which for Chinese produced one space-riddled blob cut
-/// mid-sentence (issue #14631).
+/// A cue ends on sentence punctuation, on a long pause, or when it grows past the length cap.
+/// Spaces are only inserted between Latin tokens - never around CJK characters or before
+/// punctuation, so a space-delimited language keeps its word spacing while CJK text is not broken
+/// up. Qwen3's original splitter used only a 0.5 s gap and an 80-character cap and joined every
+/// token with a space, which for Chinese produced one space-riddled blob cut mid-sentence
+/// (issue #14631); this helper is the fixed rule set, and the two engines differ only in how they
+/// flatten their output into tokens.
 /// </summary>
-public static class Qwen3AsrWordSegmenter
+public static class TimedWordSegmenter
 {
     /// <summary>Latin script cap; matches the post-processor's paragraph cap for two lines.</summary>
     public const int DefaultMaxCharsLatin = 86;
@@ -43,7 +44,7 @@ public static class Qwen3AsrWordSegmenter
     private const string NoSpaceBefore = ".,!?;:%)]}」』】）…" + "，。！？、；：";
     private const string NoSpaceAfter = "“‘([{「『【（《〈¿¡";
 
-    public static Subtitle BuildSubtitle(IReadOnlyList<Qwen3AsrWord> words, int maxCharsLatin = DefaultMaxCharsLatin, int maxCharsCjk = DefaultMaxCharsCjk)
+    public static Subtitle BuildSubtitle(IReadOnlyList<TimedWord> words, int maxCharsLatin = DefaultMaxCharsLatin, int maxCharsCjk = DefaultMaxCharsCjk)
     {
         var subtitle = new Subtitle();
         var text = new StringBuilder();

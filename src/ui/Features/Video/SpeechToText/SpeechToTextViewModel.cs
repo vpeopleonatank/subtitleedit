@@ -100,7 +100,16 @@ public partial class SpeechToTextViewModel : ObservableObject
 
     [ObservableProperty] private bool _isEngineDownloadButtonVisible;
     [ObservableProperty] private bool _isEngineSettingsButtonVisible;
+    [ObservableProperty] private bool _isEngineWebsiteButtonVisible = true;
     [ObservableProperty] private string _engineDownloadHint;
+
+    /// <summary>
+    /// Local-install hint shown next to the engine row for engines that are never downloaded by
+    /// the app (Gipformer). The download hint above is only a tooltip on a hidden button, so it
+    /// cannot tell the user where to extract a manual add-on.
+    /// </summary>
+    [ObservableProperty] private bool _isEngineLocalInstallHintVisible;
+    [ObservableProperty] private string _engineLocalInstallHint = string.Empty;
 
     [ObservableProperty] private bool _isOpenAiCompatibleSttVisible;
     [ObservableProperty] private bool _isAdvancedSettingsVisible = true;
@@ -244,6 +253,13 @@ public partial class SpeechToTextViewModel : ObservableObject
     private string _qwen3AsrOutputJsonPath = string.Empty;
     private int? _engineExitCode;
 
+    // Gipformer (manually installed local add-on): one attempt owns the JSON-lines parser and a
+    // single completion path finalizes it after process exit *and* both redirected streams
+    // reached EOF. The attempt reference also makes late output from an old process harmless.
+    private GipformerTranscript? _gipformerTranscript;
+    private int _gipformerCompletionStarted;
+    private bool _gipformerExtractCancelOffered;
+
     private readonly IWindowService _windowService;
     private readonly IFileHelper _fileHelper;
     private readonly IFolderHelper _folderHelper;
@@ -316,6 +332,13 @@ public partial class SpeechToTextViewModel : ObservableObject
             OperatingSystem.IsMacOS())
         {
             Engines.Add(new Qwen3AsrCppEngine());
+        }
+
+        // Gipformer - Vietnamese is a manually installed local add-on built for Windows x64 CPU
+        // only; on any other platform the archive could only fail to start, so it is not offered.
+        if (GipformerEngine.IsSupportedPlatform)
+        {
+            Engines.Add(new GipformerEngine());
         }
 
         Engines.Add(new CrispAsrEngine());
@@ -576,7 +599,9 @@ public partial class SpeechToTextViewModel : ObservableObject
 
     private static bool IsTranslateAvailable(ISpeechToTextEngine engine)
     {
-        return engine is not Qwen3AsrCppEngine and not ICrispAsrEngine and not IOnlineSttEngine;
+        // Gipformer is Vietnamese-only with no translation task: offering "Translate to English"
+        // would promise something the sidecar does not implement.
+        return engine is not Qwen3AsrCppEngine and not ICrispAsrEngine and not GipformerEngine and not IOnlineSttEngine;
     }
 
     private void UpdateTranslateVisibility()
@@ -909,6 +934,15 @@ public partial class SpeechToTextViewModel : ObservableObject
             catch
             {
                 _engineExitCode = null;
+            }
+
+            if (GetEffectiveSelectedEngine() is GipformerEngine)
+            {
+                // HasExited is not the end of a protocol stream: the final result line may still be
+                // in flight. Beginning completion here waits for both streams to reach EOF on a
+                // background task instead of disposing the process (and dropping that line).
+                BeginGipformerCompletion();
+                return;
             }
 
             _whisperProcess.Dispose();
@@ -1392,7 +1426,7 @@ public partial class SpeechToTextViewModel : ObservableObject
             // still get a result.
             var jsonText = JsonRepair.FixCommaDecimalSeparators(JsonRepair.EscapeControlCharsInStrings(rawJson));
             var jsonDoc = JsonDocument.Parse(jsonText);
-            var words = new List<Qwen3AsrWord>();
+            var words = new List<TimedWord>();
             foreach (var word in jsonDoc.RootElement.GetProperty("words").EnumerateArray())
             {
                 // The model prefixes its output with "language <Name><asr_text>"; qwen3-asr.cpp
@@ -1406,7 +1440,7 @@ public partial class SpeechToTextViewModel : ObservableObject
                     continue;
                 }
 
-                words.Add(new Qwen3AsrWord(
+                words.Add(new TimedWord(
                     wordText,
                     word.GetProperty("start").GetDouble(),
                     word.GetProperty("end").GetDouble()));
@@ -1415,10 +1449,10 @@ public partial class SpeechToTextViewModel : ObservableObject
             // Sentence-aware cue building (issue #14631): the old loop split only on a 0.5 s
             // gap or 80 chars and joined every token with a space, which turned Chinese
             // output into one space-riddled blob cut mid-sentence.
-            var subtitle = Qwen3AsrWordSegmenter.BuildSubtitle(
+            var subtitle = TimedWordSegmenter.BuildSubtitle(
                 words,
                 SpeechToTextPostProcessor.GetParagraphMaxChars(),
-                Qwen3AsrWordSegmenter.DefaultMaxCharsCjk);
+                TimedWordSegmenter.DefaultMaxCharsCjk);
 
             FixNegativeDuration(subtitle);
             var postProcessedSubtitle = PostProcess(subtitle);
@@ -2922,6 +2956,15 @@ public partial class SpeechToTextViewModel : ObservableObject
                     FileHelper.OpenFileWithDefaultProgram(Se.GetToolsLogFilePath());
                 }
             }
+            else if (GetEffectiveSelectedEngine() is GipformerEngine)
+            {
+                // A validated empty result with a zero exit is a successful run on silent audio -
+                // distinct from the failure path, which shows the engine's actual error instead.
+                await MessageBox.Show(
+                    Window!,
+                    Se.Language.Video.AudioToText.GipformerNoSpeechTitle,
+                    Se.Language.Video.AudioToText.GipformerNoSpeech);
+            }
         }
     }
 
@@ -2966,6 +3009,17 @@ public partial class SpeechToTextViewModel : ObservableObject
 
                 ProgressOpacity = 0;
                 IsTranscribeEnabled = true;
+
+                // "Speech to text selected lines" with Gipformer: a cancel during ffmpeg used to
+                // return here and drop the clips that had already been transcribed (#15497).
+                // Offer them once, exactly like the inference-cancel path does; other engines keep
+                // their existing behaviour, and a closing window schedules no prompt.
+                if (GetEffectiveSelectedEngine() is GipformerEngine && _audioClips != null && !_windowClosing && !_gipformerExtractCancelOffered)
+                {
+                    _gipformerExtractCancelOffered = true;
+                    Dispatcher.UIThread.Post(async () => await OfferTranscribedAudioClipsAfterCancel());
+                }
+
                 return;
             }
 
@@ -3476,6 +3530,11 @@ public partial class SpeechToTextViewModel : ObservableObject
         }
 
         var engine = GetEffectiveSelectedEngine();
+        if (string.IsNullOrWhiteSpace(engine.Url))
+        {
+            return;
+        }
+
         UiUtil.OpenUrl(engine.Url);
     }
 
@@ -3494,6 +3553,15 @@ public partial class SpeechToTextViewModel : ObservableObject
     {
         if (Window == null)
         {
+            return;
+        }
+
+        if (GetEffectiveSelectedEngine() is GipformerEngine gipformer)
+        {
+            // No downloader exists for this add-on: point at the manual extraction location (or
+            // report the real reason the existing installation is not usable).
+            await ShowGipformerInstallProblemAsync(gipformer, gipformer.CheckInstallation());
+            UpdateEngineStatusUi(gipformer);
             return;
         }
 
@@ -3907,7 +3975,7 @@ public partial class SpeechToTextViewModel : ObservableObject
     [RelayCommand]
     private async Task DownloadModel()
     {
-        if (GetEffectiveSelectedEngine().DownloadsOwnModels)
+        if (GetEffectiveSelectedEngine() is GipformerEngine || GetEffectiveSelectedEngine().DownloadsOwnModels)
         {
             return;
         }
@@ -4103,7 +4171,26 @@ public partial class SpeechToTextViewModel : ObservableObject
 
             Se.Settings.Tools.AudioToText.WhisperChoice = engine.Choice;
 
-            if (!engine.IsEngineInstalled())
+            // Gipformer is never downloaded by the app: a missing or damaged manual add-on gets a
+            // precise "extract the ZIP here" message instead of the generic download prompt, and no
+            // other engine is started in its place.
+            if (engine is GipformerEngine gipformerEngine)
+            {
+                var install = gipformerEngine.CheckInstallation();
+                if (!install.IsReady)
+                {
+                    await ShowGipformerInstallProblemAsync(gipformerEngine, install);
+                    return;
+                }
+
+                if (IsEngineLocalInstallHintVisible)
+                {
+                    UpdateEngineStatusUi(engine);
+                    RefreshEngineCombo?.Invoke();
+                }
+            }
+
+            if (engine is not GipformerEngine && !engine.IsEngineInstalled())
             {
                 if (engine is ICrispAsrEngine && Configuration.IsRunningOnWindows)
                 {
@@ -4203,7 +4290,7 @@ public partial class SpeechToTextViewModel : ObservableObject
             // Engines that download their own models (WhisperX) are never routed through SE's
             // downloader: it would fill a folder the engine does not read and re-prompt on
             // every run. Their IsModelInstalled only drives the model dot.
-            if (!engine.DownloadsOwnModels && !engine.IsModelInstalled(model.Model))
+            if (engine is not GipformerEngine && !engine.DownloadsOwnModels && !engine.IsModelInstalled(model.Model))
             {
                 var answer = await MessageBox.Show(
                     Window!,
@@ -4366,6 +4453,7 @@ public partial class SpeechToTextViewModel : ObservableObject
         }
 
         _batchIndex = 0;
+        _gipformerExtractCancelOffered = false;
 
         if (_jobItems.Count == 0)
         {
@@ -4567,13 +4655,24 @@ public partial class SpeechToTextViewModel : ObservableObject
 
         try
         {
-            _whisperProcess = GetWhisperProcess(engine, inputFile, model.Model.Name, language.Code, DoTranslateToEnglish,
-                OutputHandler, engineOutputFolder);
+            _whisperProcess = engine is GipformerEngine gipformer
+                ? StartGipformerProcess(gipformer, model.Model.Name, inputFile)
+                : GetWhisperProcess(engine, inputFile, model.Model.Name, language.Code, DoTranslateToEnglish,
+                    OutputHandler, engineOutputFolder);
         }
         catch (Exception e)
         {
             _error = e.Message;
             SeLogger.Error(e, $"Unable to start speech-to-text engine \"{engine.Name}\"");
+            if (engine is GipformerEngine)
+            {
+                // Nothing was started, so no timer tick will ever finalize this attempt. Route the
+                // failure through the same batch-advance/single-message path and tell the caller it
+                // is already handled - the generic "could not start" dialog would double-report it.
+                HandleGipformerStartFailure(e);
+                return true;
+            }
+
             return false;
         }
         _sw = Stopwatch.StartNew();
@@ -4633,6 +4732,279 @@ public partial class SpeechToTextViewModel : ObservableObject
         }
 
         return p;
+    }
+
+    /// <summary>
+    /// Launches the Gipformer sidecar with <see cref="ProcessStartInfo.ArgumentList"/> (no shell, no
+    /// hand-quoted string) and distinct stdout/stderr handlers: stdout carries the JSON-lines
+    /// protocol, stderr diagnostics only. The process is returned so it stays in
+    /// <c>_whisperProcess</c> and the existing cancel/window-close cleanup keeps owning it.
+    ///
+    /// The handlers capture this attempt's <see cref="GipformerTranscript"/>, so a late line from an
+    /// old process can never be parsed into the next one.
+    /// </summary>
+    private Process StartGipformerProcess(GipformerEngine engine, string modelName, string inputFile)
+    {
+        var executable = engine.GetExecutable();
+        var install = engine.CheckInstallation();
+        if (!install.IsReady)
+        {
+            // Rechecked right before launch so an add-on that was removed or half-replaced after the
+            // dialog opened fails with the real reason instead of a loader error.
+            throw new InvalidOperationException($"Gipformer add-on is not usable ({install.Status}: {install.Detail})");
+        }
+
+        if (!GipformerEngine.TryParseAdvancedArguments(engine.CommandLineParameter, out var extraArguments, out var argumentError))
+        {
+            throw new ArgumentException($"Invalid Gipformer parameter '{argumentError}' (only --vad on|off and --threads N are accepted)");
+        }
+
+        var attempt = new GipformerTranscript();
+        _gipformerTranscript = attempt;
+        _gipformerCompletionStarted = 0;
+        _gipformerExtractCancelOffered = false;
+
+        var startInfo = new ProcessStartInfo(executable)
+        {
+            WindowStyle = ProcessWindowStyle.Hidden,
+            CreateNoWindow = true,
+            UseShellExecute = false,
+            WorkingDirectory = Path.GetDirectoryName(executable) ?? string.Empty,
+            StandardOutputEncoding = Encoding.UTF8,
+            StandardErrorEncoding = Encoding.UTF8,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+        };
+
+        // Fixed contract: Vietnamese only, CPU only, pack from the add-on, no media range (the input
+        // is already the extracted clip or the file being transcribed).
+        startInfo.ArgumentList.Add("--model-dir");
+        startInfo.ArgumentList.Add(engine.GetModelForCmdLine(modelName));
+        startInfo.ArgumentList.Add("--input");
+        startInfo.ArgumentList.Add(inputFile);
+        startInfo.ArgumentList.Add("--language");
+        startInfo.ArgumentList.Add(GipformerEngine.LanguageCode);
+        startInfo.ArgumentList.Add("--device");
+        startInfo.ArgumentList.Add("cpu");
+        foreach (var argument in extraArguments)
+        {
+            startInfo.ArgumentList.Add(argument);
+        }
+
+        var process = new Process { StartInfo = startInfo };
+        process.OutputDataReceived += (_, args) =>
+        {
+            if (args.Data != null)
+            {
+                attempt.HandleStdOutLine(args.Data);
+            }
+        };
+        process.ErrorDataReceived += (_, args) =>
+        {
+            if (args.Data != null)
+            {
+                attempt.HandleStdErrLine(args.Data);
+            }
+        };
+
+#pragma warning disable CA1416
+        process.Start();
+#pragma warning restore CA1416
+        process.BeginOutputReadLine();
+        process.BeginErrorReadLine();
+        return process;
+    }
+
+    /// <summary>
+    /// Timer-side entry point for a Gipformer attempt whose process exited. Runs off the UI thread
+    /// and does not dispose the process until both redirected streams reached EOF, because the
+    /// final result line can still be in flight when <c>HasExited</c> turns true. Guarded so a
+    /// timer tick and a cancellation can only finalize once.
+    /// </summary>
+    private void BeginGipformerCompletion()
+    {
+        if (Interlocked.Exchange(ref _gipformerCompletionStarted, 1) == 1)
+        {
+            return;
+        }
+
+        var attempt = _gipformerTranscript;
+        var process = _whisperProcess;
+        var exitCode = _engineExitCode;
+
+        if (attempt == null)
+        {
+            try
+            {
+                process.Dispose();
+            }
+            catch (Exception exception) when (exception is InvalidOperationException or ObjectDisposedException)
+            {
+                // never started or already disposed - nothing to finalize
+            }
+
+            return;
+        }
+
+        _ = Task.Run(() =>
+        {
+            try
+            {
+                // WaitForExit() without a timeout waits for the async output readers to hit EOF;
+                // that is the only point where "no further result line" is a fact.
+                process.WaitForExit();
+            }
+            catch (Exception exception) when (exception is InvalidOperationException or SystemException)
+            {
+                SeLogger.Error(exception, "Gipformer: waiting for the engine process to exit failed");
+            }
+
+            try
+            {
+                process.Dispose();
+            }
+            catch (Exception exception) when (exception is InvalidOperationException or ObjectDisposedException)
+            {
+                // already disposed by the window-close cleanup
+            }
+
+            Dispatcher.UIThread.Post(() => FinalizeGipformerAttempt(attempt, exitCode));
+        });
+    }
+
+    /// <summary>
+    /// Single finalization point for one attempt, on the UI thread. Late output from a superseded
+    /// process is ignored by reference, and cancel/close wins over an in-flight result.
+    /// </summary>
+    private void FinalizeGipformerAttempt(GipformerTranscript attempt, int? exitCode)
+    {
+        if (!ReferenceEquals(_gipformerTranscript, attempt))
+        {
+            return;
+        }
+
+        _gipformerTranscript = null;
+        if (_windowClosing)
+        {
+            return;
+        }
+
+        var cancelled = _abort;
+        var status = attempt.TryFinalize(exitCode, cancelled, out var subtitle, out var failure);
+
+        LogToConsole($"Speech to text ({WhisperChoice.Gipformer}) done in {_sw.Elapsed}{Environment.NewLine}");
+        ProgressValue = 100;
+
+        if (status == GipformerFinalizeStatus.Cancelled)
+        {
+            // Same cancel semantics as every other engine: keep the dialog open and offer the
+            // selected-line clips that did finish.
+            _ = MakeResult(null);
+            return;
+        }
+
+        if (status == GipformerFinalizeStatus.Failed)
+        {
+            _ = HandleGipformerFailureAsync(failure ?? "unknown engine failure", attempt.StandardError);
+            return;
+        }
+
+        // Recognition text/punctuation/timing are already final here; cue splitting uses the shared
+        // segmenter, then the normal timing repair and post-processing run exactly once.
+        var postProcessedSubtitle = PostProcess(SpeechToTextTimingFixer.SortAndRemoveOverlaps(subtitle!));
+
+        // Clip results are matched by the clip's own file name (not the extracted temp WAV or the
+        // list index), and stay relative to zero - the caller applies the media start once.
+        if (_audioClips != null && ResultAudioClips.Count > 0)
+        {
+            var outputAudioClip = ResultAudioClips.FirstOrDefault(p => p.AudioFileName == _videoFileName);
+            if (outputAudioClip != null)
+            {
+                outputAudioClip.Transcription = new Subtitle(postProcessedSubtitle);
+            }
+        }
+
+        _ = MakeResult(postProcessedSubtitle);
+    }
+
+    /// <summary>
+    /// Reports a failed Gipformer attempt: batch items are marked failed and the run advances (the
+    /// closing summary counts them), a single run shows the real reason. Never reuses a previous
+    /// job's result and never falls back to another engine.
+    /// </summary>
+    private async Task HandleGipformerFailureAsync(string failure, string standardError)
+    {
+        LogToConsole($"Gipformer failed: {failure}{Environment.NewLine}");
+        var diagnostic = string.IsNullOrWhiteSpace(standardError) ? string.Empty : standardError.Trim();
+        Se.WriteToolsLog(
+            $"Gipformer failed: {failure}" + (diagnostic.Length == 0 ? string.Empty : Environment.NewLine + diagnostic),
+            true);
+
+        if (_abort)
+        {
+            await MakeResult(null);
+            return;
+        }
+
+        if (IsBatchMode)
+        {
+            if (_batchIndex >= 0 && _batchIndex < _jobItems.Count)
+            {
+                _jobItems[_batchIndex].Status = Se.Language.General.Error;
+            }
+
+            StartNext(null);
+            return;
+        }
+
+        IsTranscribeEnabled = true;
+        HideProgressBar();
+        ProgressText = string.Empty;
+        var message = diagnostic.Length == 0 ? failure : failure + Environment.NewLine + Environment.NewLine + diagnostic;
+        await MessageBox.Show(
+            Window!,
+            Se.Language.Video.AudioToText.GipformerEngineFailedTitle,
+            string.Format(Se.Language.Video.AudioToText.GipformerEngineFailed, message));
+    }
+
+    /// <summary>
+    /// A Gipformer run that never produced a process (missing loader dependency, deleted add-on,
+    /// invalid advanced parameters). Finalized here so a batch advances instead of stalling.
+    /// </summary>
+    private void HandleGipformerStartFailure(Exception exception)
+    {
+        _gipformerTranscript = null;
+        Interlocked.Exchange(ref _gipformerCompletionStarted, 1);
+        if (_windowClosing)
+        {
+            return;
+        }
+
+        var reason = $"{exception.GetType().Name}: {exception.Message}";
+        Dispatcher.UIThread.Post(() => _ = HandleGipformerFailureAsync(reason, string.Empty));
+    }
+
+    /// <summary>
+    /// Manual-install message for a missing/incomplete/unsupported add-on. Names the exact folder to
+    /// extract into and the first problem found; starts no downloader and no other engine.
+    /// </summary>
+    private async Task ShowGipformerInstallProblemAsync(GipformerEngine engine, GipformerInstallResult install)
+    {
+        var language = Se.Language.Video.AudioToText;
+        var root = engine.GetAddonRoot();
+        var (title, message) = install.Status switch
+        {
+            GipformerInstallStatus.NotInstalled =>
+                (language.GipformerInstallTitle, string.Format(language.GipformerManualInstall, root)),
+            GipformerInstallStatus.Incomplete =>
+                (language.GipformerInstallTitle, string.Format(language.GipformerIncomplete, install.Detail, root)),
+            GipformerInstallStatus.UnsupportedVersion =>
+                (language.GipformerInstallTitle, string.Format(language.GipformerUnsupportedVersion, install.Detail, root)),
+            _ =>
+                (language.GipformerInstallTitle, string.Format(language.GipformerInvalidAddon, install.Detail, root)),
+        };
+
+        await MessageBox.Show(Window!, title, message);
     }
 
     /// <summary>
@@ -5681,7 +6053,9 @@ public partial class SpeechToTextViewModel : ObservableObject
 
         // SE's downloader saves into a folder an engine that downloads its own models never
         // reads (WhisperX: the Hugging Face hub cache), so offering it only wastes gigabytes.
-        IsModelDownloadVisible = IsModelSelectionVisible && !engine.DownloadsOwnModels;
+        // CanBeDownloaded also covers the manual add-on engine, whose single model pack ships
+        // inside the archive: a download button there opens a list it cannot install.
+        IsModelDownloadVisible = IsModelSelectionVisible && !engine.DownloadsOwnModels && engine.CanBeDownloaded();
 
         IsLanguageSelectionVisible = !isOnlineSttEngine;
         if (!IsLanguageSelectionVisible)
@@ -5726,6 +6100,29 @@ public partial class SpeechToTextViewModel : ObservableObject
     {
         var canDownload = engine.CanBeDownloaded();
         var isInstalled = engine.IsEngineInstalled();
+
+        IsEngineWebsiteButtonVisible = !string.IsNullOrWhiteSpace(engine.Url);
+
+        if (engine is GipformerEngine gipformer)
+        {
+            // Never downloadable: the status row is the only place that can tell the user where the
+            // manual add-on goes. Structural check only - no hashing on a picker render.
+            IsEngineSettingsButtonVisible = false;
+            IsEngineDownloadButtonVisible = false;
+            EngineDownloadHint = string.Empty;
+
+            var install = gipformer.CheckInstallation();
+            IsEngineLocalInstallHintVisible = !install.IsReady;
+            EngineLocalInstallHint = install.IsReady
+                ? string.Empty
+                : install.Status == GipformerInstallStatus.NotInstalled
+                    ? string.Format(Se.Language.Video.AudioToText.GipformerAddonStatusMissing, gipformer.GetAddonRoot())
+                    : string.Format(Se.Language.Video.AudioToText.GipformerAddonStatusInvalid, gipformer.GetAddonRoot());
+            return;
+        }
+
+        IsEngineLocalInstallHintVisible = false;
+        EngineLocalInstallHint = string.Empty;
 
         // Settings gear is for downloadable engines that already have a binary on disk.
         // It opens a dialog with the installed backend, status and Re-download — which is

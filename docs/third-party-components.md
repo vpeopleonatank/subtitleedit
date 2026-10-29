@@ -37,6 +37,7 @@ Subtitle Edit stores these components in its **Data Folder**.
 | **WhisperX** | standalone build (no Python); models in the Hugging Face cache | `[Data Folder]/SpeechToText/WhisperX` |
 | **Crisp ASR** | `crispasr.exe`, `models/` folder | `[Data Folder]/CrispASR` |
 | **Qwen3 ASR CPP** | `qwen3-asr-cli.exe`, `models/` folder | `[Data Folder]/Qwen3ASR` |
+| **Gipformer - Vietnamese** | manually installed add-on: `runtime/caption-engine.exe` + `pack/` (387 MB) | `[Data Folder]/SpeechToText/Gipformer` |
 | **PaddleOCR** | `paddleocr.exe`, `models/` folder | `[Data Folder]/OCR/PaddleOCR3-7` |
 | **CrispEmbed** | OCR runtime, GGUF models in `models/` | `[Data Folder]/OCR/CrispEmbed` |
 | **llama.cpp** | `llama-server.exe`, GGUF models in `models/` (translate, AI review, OCR) | `[Data Folder]/llama.cpp` |
@@ -127,6 +128,24 @@ Subtitle Edit 5 can download additional ASR engines directly from the **Speech t
 *   **Qwen3 ASR CPP:** Stored in `[Data Folder]/Qwen3ASR`. Models go into `[Data Folder]/Qwen3ASR/models`. (Parakeet is no longer a standalone engine; it is a Crisp ASR backend.)
 *   **llama.cpp:** Stored in `[Data Folder]/llama.cpp` with the GGUF models in its `models` folder. One install serves the llama.cpp auto-translate engines, AI review, the AI assistant and the llama.cpp OCR vision models; a `.gguf` you download yourself and drop into `models` is listed as *(custom)*.
 *   **CrispEmbed:** The local OCR runtime, stored in `[Data Folder]/OCR/CrispEmbed` with its GGUF models in `models`.
+*   **Gipformer - Vietnamese (manual install):** the one engine Subtitle Edit does not download. The add-on ZIP is extracted by the user into `[Data Folder]/SpeechToText/`, which produces:
+
+    ```
+    [Data Folder]/SpeechToText/Gipformer/
+        addon.json            format/identity manifest written by the build; lists every file's size
+        BUILD-INFO.txt        build date, toolchain and pinned model digests
+        runtime/              PyInstaller-frozen CPython 3.11 sidecar (caption-engine.exe, _internal/)
+        pack/                 model.json, model/*.onnx + tokens.txt (Gipformer 1.5 68M),
+                              punct/* (ViBERT-capu int8 + vocab), silero_vad.onnx,
+                              vocabulary/labels.txt
+        licenses/             THIRD-PARTY-NOTICES.md and the bundled license texts
+    ```
+
+    *   Runtime: sherpa-onnx 1.13.8 on onnxruntime 1.31.0 (CPU), frozen with PyInstaller; no Python, CUDA DLLs are excluded.
+    *   Models: Gipformer 1.5 Vietnamese RNN-T 68M (encoder/decoder/joiner, fp32 ONNX - encoder alone is 261 MB), ViBERT-capu punctuation/casing (int8), Silero VAD; the pinned digests are in `BUILD-INFO.txt` and `pack/model.json`.
+    *   Subtitle Edit reads `addon.json` and checks that every required file exists, is non-empty and matches the declared size before it launches anything; it does not hash the payload at startup.
+    *   **Redistribution:** the frozen pipeline is CaptionHelper's CPU path, and the model/notice status is recorded in `licenses/THIRD-PARTY-NOTICES.md`. Public redistribution of the archive requires that clearance to be recorded - it must not be assumed from this document. The engine entry ships in the app; the package does not.
+    *   Trust: local executable code installed by hand. Only extract a package you built or received from a trusted source, and compare its SHA-256 with the build receipt that ships beside the archive.
 
 Use [Speech to Text](features/speech-to-text.md) for the current engine list and workflow.
 

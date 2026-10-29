@@ -52,6 +52,11 @@ public static class WhisperEngineFactory
             return new Qwen3AsrCppEngine();
         }
 
+        if (staticName == GipformerEngine.StaticName)
+        {
+            return new GipformerEngine();
+        }
+
         if (staticName == OpenAiCompatibleSttEngine.StaticName)
         {
             return new OpenAiCompatibleSttEngine();

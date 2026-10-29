@@ -5,6 +5,7 @@ Subtitle Edit Changelog
 
 v5.4.0-beta9 (28th of October 2026)
 
+* Add "Gipformer - Vietnamese" offline speech-to-text engine (Windows x64 CPU, manually installed add-on: extract the ZIP into the data folder's SpeechToText folder)
 * Add background images for video player and waveform (also check the "Cycle theme" shortcut)
 * Clicking on the video area with no video loaded, an open video prompt will appear 
 * Add subtitle context menu for delete line in "Fix common errors" - thx skylinekiller

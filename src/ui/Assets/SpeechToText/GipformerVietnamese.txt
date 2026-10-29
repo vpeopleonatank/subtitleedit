@@ -1,0 +1,68 @@
+Gipformer — Vietnamese (local add-on)
+
+What it is
+  An offline Vietnamese speech-to-text engine built from CaptionHelper's sherpa-onnx
+  pipeline: Gipformer 1.5 (68M RNN-T) recognition, Silero VAD, Vietnamese number
+  normalization (ITN), ViBERT-capu punctuation/casing and word timestamps. It runs on the
+  CPU only, needs no Python and no network, and does not download anything.
+
+Installation
+  Gipformer is not installed by Subtitle Edit. Extract the contents of the add-on ZIP
+  (gipformer-vi-win-x64.zip) into:
+
+      [Data Folder]/SpeechToText/
+
+  so the result is:
+
+      [Data Folder]/SpeechToText/Gipformer/
+          addon.json
+          BUILD-INFO.txt
+          runtime/caption-engine.exe + runtime/_internal/...
+          pack/model.json, pack/model/*.onnx, pack/model/tokens.txt
+          pack/punct/*, pack/vocabulary/labels.txt, pack/silero_vad.onnx
+          licenses/
+
+  The "Open Subtitle Edit data folder" action opens [Data Folder]. Extract the ZIP's own Gipformer folder,
+  not a second folder inside it: if you end up with Gipformer/Gipformer, the engine cannot
+  start. To upgrade, close running transcription and replace the whole Gipformer folder.
+
+Accuracy
+  This is a 68M-parameter model. Compared directly with a large multilingual model
+  (Whisper large-v3-turbo) its output needed more editing, so choose it for offline CPU
+  speed and Vietnamese-only operation, not for accuracy.
+
+Platform and languages
+  Windows x64, CPU only. Vietnamese only - there is no language detection, no translation,
+  no forced aligner, no speaker detection and no GPU variant. Select the engine, keep the
+  single "gipformer1.5-vi" model, and transcribe.
+
+Advanced parameters
+  The advanced settings box accepts only:
+
+      --vad on|off     (default: on)  Silero VAD with gap-fill; "off" decodes fixed chunks
+      --threads N      (N >= 1)       CPU threads for recognition and punctuation
+
+  Everything else is fixed by Subtitle Edit: --model-dir, --input, --language vi,
+  --device cpu. Passing those (or any unknown flag) is reported as an error instead of
+  being silently ignored.
+
+Output and timing
+  Recognition text, punctuation, numbers and word timestamps come from the sidecar. Cues are
+  split on sentence punctuation, on pauses (1.0 s hard, 0.5 s after a clause boundary) and at
+  the line-length cap, then Subtitle Edit's normal timing repair and post-processing apply.
+  Word ends are approximated by the engine (last token time + 0.12 s, capped at the next
+  word), so a cue end is not frame-exact. Selected-line runs give the engine an already
+  extracted clip; the media offset is applied once by the editor.
+
+Failures
+  A missing or damaged add-on is reported with the exact folder to extract into. A crash,
+  nonzero exit, malformed output, duplicate result or missing result is an explicit error -
+  it is never treated as "no speech". Only a clean exit with a valid result can produce
+  subtitles, and a valid empty result means the audio contained no speech.
+
+Trust and licenses
+  This is manually installed local executable code: only install an add-on you built or
+  received from a trusted source, and compare the archive checksum with the build receipt
+  that ships next to it. The structural readiness check and the manifest hashes detect an
+  incomplete or drifted copy; they do not authenticate the package. See
+  licenses/THIRD-PARTY-NOTICES.md in the add-on and docs/third-party-components.md.

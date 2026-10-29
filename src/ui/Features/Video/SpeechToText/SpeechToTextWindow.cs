@@ -1,4 +1,4 @@
-using Avalonia;
+﻿using Avalonia;
 using Avalonia.Automation;
 using Avalonia.Controls;
 using Avalonia.Controls.Primitives;
@@ -159,7 +159,8 @@ public class SpeechToTextWindow : Window
         // of the snapshot taken when each row was first realised.
         vm.RefreshEngineCombo = () => comboEngine.ItemTemplate = MakeEngineItemTemplate();
         var buttonEngineWebsite = EditorChrome.AsToolButton(UiUtil.MakeButton(vm.ShowWebLinkCommand, IconNames.Web))
-            .WithAccessibleName($"{Se.Language.General.Engine} - {Se.Language.General.MoreInfo}");
+            .WithAccessibleName($"{Se.Language.General.Engine} - {Se.Language.General.MoreInfo}")
+            .BindIsVisible(vm, nameof(vm.IsEngineWebsiteButtonVisible));
         if (Se.Settings.Appearance.ShowHints)
         {
             ToolTip.SetTip(buttonEngineWebsite, Se.Language.General.MoreInfo);
@@ -186,6 +187,17 @@ public class SpeechToTextWindow : Window
         }
 
         var engineRow = SpeechToTextChrome.WithTrailing(comboEngine, buttonEngineWebsite, buttonEngineDownload, buttonEngineSettings);
+
+        // Manually installed engines (Gipformer) have no download button whose tooltip could
+        // explain the install location, so the hint gets its own visible line under the engine row.
+        var engineLocalInstallHint = new TextBlock
+        {
+            TextWrapping = TextWrapping.Wrap,
+            Foreground = EditorChrome.DimTextBrush,
+            FontSize = EditorChrome.ScaledFont(12),
+        }
+            .WithBindText(vm, nameof(vm.EngineLocalInstallHint))
+            .BindIsVisible(vm, nameof(vm.IsEngineLocalInstallHintVisible));
 
         var labelBackend = Label(Se.Language.General.Backend);
         var comboWhisperCppBackend = UiUtil.MakeComboBox(vm.WhisperCppBackends, vm, nameof(vm.SelectedWhisperCppBackend))
@@ -225,6 +237,7 @@ public class SpeechToTextWindow : Window
 
         var rows = new StackPanel { Spacing = 8 };
         rows.Children.Add(engineRow);
+        rows.Children.Add(engineLocalInstallHint);
         rows.Children.Add(rowBackend);
         rows.Children.Add(rowModel);
         rows.Children.Add(rowLanguage);
